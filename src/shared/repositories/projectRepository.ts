@@ -1,5 +1,7 @@
 import {
+  EMPTY_SELECTION,
   EXAMPLE_PROJECT,
+  type ComparisonSelection,
   type LatencyProject,
   type RequestNode,
   type ScenarioSnapshot,
@@ -92,6 +94,16 @@ function parseScenario(value: unknown): ScenarioSnapshot | undefined {
   };
 }
 
+function parseComparison(value: unknown): ComparisonSelection {
+  // 只做结构校验；指向已不存在方案的 ID 留待载入后按“导入”统一重新校验并提示。
+  if (!isRecord(value)) return EMPTY_SELECTION;
+  const baselineId =
+    typeof value.baselineId === "string" ? value.baselineId : "";
+  const comparisonId =
+    typeof value.comparisonId === "string" ? value.comparisonId : "";
+  return { baselineId, comparisonId };
+}
+
 function parseProject(
   value: unknown,
 ): { project: LatencyProject; recovered: boolean } | undefined {
@@ -151,6 +163,7 @@ function parseProject(
         ? Math.floor(value.concurrencyLimit)
         : null,
     scenarios,
+    comparison: parseComparison(value.comparison),
     createdAt:
       typeof value.createdAt === "number" && Number.isFinite(value.createdAt)
         ? value.createdAt

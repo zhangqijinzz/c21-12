@@ -88,36 +88,52 @@ export default function ScenarioPanel({
         </div>
       ) : (
         <>
-          <div className="compare-selectors">
-            <div>
-              <span className="compare-label">基准方案</span>
-              <select
-                value={baseline?.id ?? ""}
-                onChange={(event) => onSelectBaseline(event.target.value)}
-              >
-                {project.scenarios.map((scenario) => (
-                  <option key={scenario.id} value={scenario.id}>
-                    {scenario.name}
-                  </option>
-                ))}
-              </select>
+          {project.scenarios.length === 1 ? (
+            <div className="comparison-pending" role="status">
+              <span className="comparison-pending-mark">1 / 2</span>
+              <div>
+                <strong>再保存一份方案即可开始对比</strong>
+                <p>
+                  当前只有“{project.scenarios[0]?.name}
+                  ”一份快照。为避免把同一份方案同时当作基准与对照，
+                  对比结果暂不展示；保存第二份后会自动确定基准与对照。
+                </p>
+              </div>
             </div>
-            <span className="compare-vs">VS</span>
-            <div>
-              <span className="compare-label">对照方案</span>
-              <select
-                value={comparison?.id ?? ""}
-                onChange={(event) => onSelectComparison(event.target.value)}
-              >
-                {project.scenarios.map((scenario) => (
-                  <option key={scenario.id} value={scenario.id}>
-                    {scenario.name}
-                  </option>
-                ))}
-              </select>
+          ) : (
+            <div className="compare-selectors">
+              <div>
+                <span className="compare-label">基准方案</span>
+                <select
+                  value={baseline?.id ?? ""}
+                  onChange={(event) => onSelectBaseline(event.target.value)}
+                >
+                  {!baseline && <option value="">请选择基准方案</option>}
+                  {project.scenarios.map((scenario) => (
+                    <option key={scenario.id} value={scenario.id}>
+                      {scenario.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <span className="compare-vs">VS</span>
+              <div>
+                <span className="compare-label">对照方案</span>
+                <select
+                  value={comparison?.id ?? ""}
+                  onChange={(event) => onSelectComparison(event.target.value)}
+                >
+                  {!comparison && <option value="">请选择对照方案</option>}
+                  {project.scenarios.map((scenario) => (
+                    <option key={scenario.id} value={scenario.id}>
+                      {scenario.name}
+                    </option>
+                  ))}
+                </select>
+              </div>
             </div>
-          </div>
-          {baseline && comparison && (
+          )}
+          {baseline && comparison && baseline.id !== comparison.id && (
             <div className="comparison-result">
               <article className="compare-card">
                 <span>基准完成时间</span>
@@ -164,7 +180,20 @@ export default function ScenarioPanel({
               <div className="snapshot-row" key={scenario.id}>
                 <span className="snapshot-badge">S</span>
                 <div className="snapshot-info">
-                  <strong>{scenario.name}</strong>
+                  <strong>
+                    {scenario.name}
+                    {scenario.id === baseline?.id && (
+                      <em className="selection-tag selection-tag-baseline">
+                        基准
+                      </em>
+                    )}
+                    {scenario.id === comparison?.id &&
+                      scenario.id !== baseline?.id && (
+                        <em className="selection-tag selection-tag-comparison">
+                          对照
+                        </em>
+                      )}
+                  </strong>
                   <small>
                     {new Date(scenario.createdAt).toLocaleString("zh-CN", {
                       month: "numeric",

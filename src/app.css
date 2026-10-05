@@ -1811,6 +1811,58 @@ button:disabled {
   color: #a4aca3;
   font: 9px var(--mono);
 }
+.comparison-pending {
+  display: flex;
+  align-items: center;
+  gap: 13px;
+  margin: 0 auto 14px;
+  max-width: 720px;
+  padding: 14px 16px;
+  background: #fff;
+  border: 1px dashed #d7e0c8;
+  border-radius: 9px;
+}
+.comparison-pending-mark {
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+  width: 42px;
+  height: 42px;
+  color: #7b9458;
+  background: #f0f5e6;
+  border: 1px solid #e5edd6;
+  border-radius: 12px;
+  font: 600 10px var(--mono);
+}
+.comparison-pending strong {
+  display: block;
+  color: #4c5a50;
+  font: 600 10px var(--display);
+}
+.comparison-pending p {
+  margin: 5px 0 0;
+  color: #929d94;
+  font-size: 8px;
+  line-height: 1.7;
+}
+.selection-tag {
+  display: inline-block;
+  margin-left: 7px;
+  padding: 2px 6px;
+  border-radius: 4px;
+  font-style: normal;
+  font: 800 7px var(--mono);
+  letter-spacing: 0.08em;
+  vertical-align: 1px;
+}
+.selection-tag-baseline {
+  color: #5f7d44;
+  background: #eef4e2;
+}
+.selection-tag-comparison {
+  color: #dfe8d2;
+  background: #293f35;
+}
 .comparison-result {
   display: grid;
   grid-template-columns: 1fr 150px 1fr;

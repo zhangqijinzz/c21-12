@@ -86,4 +86,34 @@ describe("project repository recovery", () => {
     expect(loaded.document.projects[0]?.id).toBe(EXAMPLE_PROJECT.id);
     expect(loaded.recovered).toBe(true);
   });
+
+  it("restores the explicit comparison selection and defaults malformed values to empty", async () => {
+    const storage = new MemoryStorage();
+    storage.value = {
+      version: 1,
+      activeProjectId: EXAMPLE_PROJECT.id,
+      projects: [
+        {
+          ...structuredClone(EXAMPLE_PROJECT),
+          comparison: { baselineId: "snapshot-a", comparisonId: "snapshot-b" },
+        },
+        {
+          ...structuredClone(EXAMPLE_PROJECT),
+          id: "project-other",
+          title: "另一个项目",
+          comparison: { baselineId: 42 },
+        },
+      ],
+    };
+    const loaded = await new ProjectRepository(storage).load();
+    expect(loaded.document.projects[0]?.comparison).toEqual({
+      baselineId: "snapshot-a",
+      comparisonId: "snapshot-b",
+    });
+    // 结构损坏的选择只做空值兜底，不抛错；指向是否存在留给界面层重新校验。
+    expect(loaded.document.projects[1]?.comparison).toEqual({
+      baselineId: "",
+      comparisonId: "",
+    });
+  });
 });

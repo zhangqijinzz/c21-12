@@ -20,12 +20,27 @@ export interface ScenarioSnapshot {
   criticalPath: string[];
 }
 
+/**
+ * 方案对比是一项明确状态：基准方案与对照方案的 ID。
+ * 空字符串代表该侧未选择；同一项目内的两侧必须指向不同的快照。
+ */
+export interface ComparisonSelection {
+  baselineId: string;
+  comparisonId: string;
+}
+
+export const EMPTY_SELECTION: ComparisonSelection = {
+  baselineId: "",
+  comparisonId: "",
+};
+
 export interface LatencyProject {
   id: string;
   title: string;
   nodes: RequestNode[];
   concurrencyLimit: number | null;
   scenarios: ScenarioSnapshot[];
+  comparison: ComparisonSelection;
   createdAt: number;
   updatedAt: number;
 }
@@ -67,6 +82,7 @@ export const EXAMPLE_PROJECT: LatencyProject = {
   createdAt: 1_728_000_000_000,
   updatedAt: 1_728_000_000_000,
   scenarios: [],
+  comparison: { baselineId: "", comparisonId: "" },
   nodes: [
     {
       id: "session",
@@ -129,6 +145,7 @@ export function createEmptyProject(now = Date.now()): LatencyProject {
     nodes: [],
     concurrencyLimit: null,
     scenarios: [],
+    comparison: { baselineId: "", comparisonId: "" },
     createdAt: now,
     updatedAt: now,
   };

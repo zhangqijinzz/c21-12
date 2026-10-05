@@ -8,31 +8,56 @@ import type {
 import {
   createProject,
   duplicateProject,
+  removeProject,
   renameProject,
   selectProject,
+  updateProject,
 } from "../projects/projectViewModel";
 import {
   addRequestNode,
+  getGraphAnalysis,
   patchRequestNode,
   removeRequestNode,
   setConcurrency,
   toggleDependency,
-  getGraphAnalysis,
 } from "../graph-editor/graphViewModel";
 import {
   compareScenarios,
+  reconcileScenarioSelection,
   removeScenario,
   restoreScenario,
   saveScenario,
+  selectScenarioSide,
   type ScenarioComparison,
+  type SelectionReason,
 } from "../scenarios/scenarioViewModel";
-import { removeProject, updateProject } from "../projects/projectViewModel";
 import { simulateProject } from "../../shared/domain/simulation";
 
 export type LabStatus =
   "loading" | "ready" | "editing" | "simulating" | "error" | "completed";
 export type LabModule =
   "projects" | "graph" | "simulation" | "scenarios" | "archive";
+
+/**
+ * 对当前项目执行一次变更，并在变更后统一重新校验方案对比选择。
+ * 返回需要展示给用户的说明（选择保持有效时为空）。
+ */
+function applyProjectChange(
+  document: WorkspaceDocument,
+  nextProject: LatencyProject,
+  reason: SelectionReason,
+  removedName?: string,
+): { document: WorkspaceDocument; notice: string } {
+  const reconciled = reconcileScenarioSelection(
+    nextProject,
+    reason,
+    removedName,
+  );
+  return {
+    document: updateProject(document, reconciled.project),
+    notice: reconciled.notice,
+  };
+}
 
 export function useLatencyLab() {
   const repository = useMemo(() => new ProjectRepository(), []);
@@ -41,10 +66,6 @@ export function useLatencyLab() {
   const [status, setStatus] = useState<LabStatus>("loading");
   const [module, setModule] = useState<LabModule>("simulation");
   const [mode, setMode] = useState<SimulationMode>("expected");
-  const [comparisonIds, setComparisonIds] = useState<{
-    baselineId: string;
-    comparisonId: string;
-  }>({ baselineId: "", comparisonId: "" });
   const [notice, setNotice] = useState("");
   const [persisted, setPersisted] = useState<"saving" | "saved" | "error">(
     "saved",
@@ -64,28 +85,25 @@ export function useLatencyLab() {
     [activeProject],
   );
   const scenarioList = activeProject?.scenarios ?? [];
-  const baselineScenario =
-    scenarioList.find((scenario) => scenario.id === comparisonIds.baselineId) ??
-    scenarioList[1] ??
-    scenarioList[0];
-  const comparisonScenario =
-    scenarioList.find(
-      (scenario) => scenario.id === comparisonIds.comparisonId,
-    ) ?? scenarioList[0];
+  // 选择只从明确的项目状态读取，不再做任何静默兜底；指向的方案不存在时直接
+  // 显示为“无选择”，由归一化逻辑负责修复，绝不悄悄显示成另外一份方案。
+  const findScenario = (id: string) =>
+    scenarioList.find((scenario) => scenario.id === id);
+  const baselineScenario = activeProject?.comparison.baselineId
+    ? findScenario(activeProject.comparison.baselineId)
+    : undefined;
+  const comparisonScenario = activeProject?.comparison.comparisonId
+    ? findScenario(activeProject.comparison.comparisonId)
+    : undefined;
   const scenarioComparison: ScenarioComparison | undefined =
-    baselineScenario && comparisonScenario
+    baselineScenario &&
+    comparisonScenario &&
+    baselineScenario.id !== comparisonScenario.id
       ? compareScenarios(baselineScenario, comparisonScenario)
       : undefined;
   const simulationValid =
     Boolean(activeProject) &&
     result?.entries.length === activeProject?.nodes.length;
-
-  const selectComparisonScenario = useCallback(
-    (side: "baselineId" | "comparisonId", id: string) => {
-      setComparisonIds((current) => ({ ...current, [side]: id }));
-    },
-    [],
-  );
 
   useEffect(() => {
     let mounted = true;
@@ -93,11 +111,37 @@ export function useLatencyLab() {
       .load()
       .then(({ document: loaded, recovered }) => {
         if (!mounted) return;
-        documentRef.current = loaded;
-        setDocument(loaded);
+        // 载入即导入：统一校验每个项目自己的对比选择，避免切换到其他项目时
+        // 才发现旧选择已失效；只持久化真正发生变化的项目。
+        let nextDocument = loaded;
+        let loadNotice = recovered
+          ? "已载入示例工作区；后续修改会自动保存到此设备。"
+          : "";
+        const repairedProjects: LatencyProject[] = [];
+        loaded.projects.forEach((project) => {
+          const reconciled = reconcileScenarioSelection(project, "import");
+          if (reconciled.project !== project) {
+            repairedProjects.push(reconciled.project);
+            if (project.id === loaded.activeProjectId && reconciled.notice)
+              loadNotice = loadNotice
+                ? `${loadNotice}${reconciled.notice}`
+                : reconciled.notice;
+          }
+        });
+        if (repairedProjects.length > 0) {
+          nextDocument = repairedProjects.reduce(
+            (doc, repaired) => updateProject(doc, repaired),
+            loaded,
+          );
+          documentRef.current = nextDocument;
+          queue.current = queue.current.then(() =>
+            repository.save(nextDocument),
+          );
+        }
+        documentRef.current = nextDocument;
+        setDocument(nextDocument);
         setStatus("ready");
-        if (recovered)
-          setNotice("已载入示例工作区；后续修改会自动保存到此设备。");
+        setNotice(loadNotice);
       })
       .catch(() => {
         if (!mounted) return;
@@ -110,12 +154,16 @@ export function useLatencyLab() {
   }, [repository]);
 
   const commit = useCallback(
-    (next: WorkspaceDocument, nextStatus: LabStatus = "editing") => {
+    (
+      next: WorkspaceDocument,
+      nextStatus: LabStatus = "editing",
+      explicitNotice?: string,
+    ) => {
       const currentRevision = ++revision.current;
       documentRef.current = next;
       setDocument(next);
       setStatus(nextStatus);
-      setNotice("");
+      setNotice(explicitNotice ?? "");
       setPersisted("saving");
       queue.current = queue.current
         .then(() => repository.save(next))
@@ -129,7 +177,11 @@ export function useLatencyLab() {
           if (revision.current === currentRevision) {
             setPersisted("error");
             setStatus("error");
-            setNotice("保存失败。数据仍保留在当前页面，请重试保存。");
+            setNotice(
+              explicitNotice
+                ? `${explicitNotice}自动保存失败，数据仍保留在当前页面，请重试保存。`
+                : "保存失败。数据仍保留在当前页面，请重试保存。",
+            );
           }
         });
     },
@@ -137,9 +189,12 @@ export function useLatencyLab() {
   );
 
   const editProject = useCallback(
-    (project: LatencyProject) => {
+    (project: LatencyProject, explicitNotice: string) => {
       const current = documentRef.current;
-      if (current) commit(updateProject(current, project));
+      if (!current) return;
+      // 恢复不改变方案列表，但仍统一过一次校验以保证选择状态确定。
+      const outcome = applyProjectChange(current, project, "restore");
+      commit(outcome.document, "editing", explicitNotice || outcome.notice);
     },
     [commit],
   );
@@ -147,7 +202,17 @@ export function useLatencyLab() {
   const chooseProject = useCallback(
     (id: string) => {
       const current = documentRef.current;
-      if (current) commit(selectProject(current, id), "ready");
+      if (!current) return;
+      const switched = selectProject(current, id);
+      const target = switched.projects.find((project) => project.id === id);
+      if (!target) return;
+      // 切换项目后选择绝不串项目：按目标项目自己保存的选择重新校验。
+      const reconciled = reconcileScenarioSelection(target, "switch");
+      commit(
+        updateProject(switched, reconciled.project),
+        "ready",
+        reconciled.notice || undefined,
+      );
     },
     [commit],
   );
@@ -159,57 +224,116 @@ export function useLatencyLab() {
 
   const renameActive = useCallback(
     (title: string) => {
-      if (activeProject) editProject(renameProject(activeProject, title));
+      if (activeProject) {
+        const current = documentRef.current;
+        if (current)
+          commit(
+            updateProject(current, renameProject(activeProject, title)),
+            "editing",
+          );
+      }
     },
-    [activeProject, editProject],
+    [activeProject, commit],
   );
 
   const duplicateActive = useCallback(() => {
     const current = documentRef.current;
-    if (current && activeProject)
-      commit(duplicateProject(current, activeProject), "editing");
+    if (current && activeProject) {
+      // 复制出的项目不携带方案快照，对比选择也是空的，不会继承旧项目的选择。
+      const duplicated = duplicateProject(current, activeProject);
+      commit(
+        duplicated,
+        "editing",
+        "已复制项目；副本不包含方案快照，对比选择从空状态开始。",
+      );
+    }
   }, [activeProject, commit]);
 
   const deleteProject = useCallback(
     (id: string) => {
       const current = documentRef.current;
-      if (current && current.projects.length > 1)
-        commit(removeProject(current, id), "editing");
-      else setNotice("至少保留一个链路项目。");
+      if (!current) return;
+      if (current.projects.length <= 1) {
+        setNotice("至少保留一个链路项目。");
+        return;
+      }
+      const removed = removeProject(current, id);
+      const target =
+        removed.projects.find(
+          (project) => project.id === removed.activeProjectId,
+        ) ?? removed.projects[0];
+      if (!target) return;
+      // 删除后落到另一个项目：用该项目自己的选择，绝不沿用被删项目的 ID。
+      const reconciled = reconcileScenarioSelection(target, "switch");
+      commit(
+        updateProject(removed, reconciled.project),
+        "editing",
+        reconciled.notice || undefined,
+      );
     },
     [commit],
   );
 
   const addNode = useCallback(() => {
-    if (activeProject) editProject(addRequestNode(activeProject));
-  }, [activeProject, editProject]);
+    if (activeProject) {
+      const current = documentRef.current;
+      if (current)
+        commit(
+          updateProject(current, addRequestNode(activeProject)),
+          "editing",
+        );
+    }
+  }, [activeProject, commit]);
   const patchNode = useCallback(
     (id: string, patch: Parameters<typeof patchRequestNode>[2]) => {
-      if (activeProject)
-        editProject(patchRequestNode(activeProject, id, patch));
+      if (activeProject) {
+        const current = documentRef.current;
+        if (current)
+          commit(
+            updateProject(current, patchRequestNode(activeProject, id, patch)),
+            "editing",
+          );
+      }
     },
-    [activeProject, editProject],
+    [activeProject, commit],
   );
   const deleteNode = useCallback(
     (id: string) => {
-      if (activeProject) editProject(removeRequestNode(activeProject, id));
+      if (activeProject) {
+        const current = documentRef.current;
+        if (current)
+          commit(
+            updateProject(current, removeRequestNode(activeProject, id)),
+            "editing",
+          );
+      }
     },
-    [activeProject, editProject],
+    [activeProject, commit],
   );
   const setNodeDependency = useCallback(
     (id: string, dependencyId: string) => {
       if (!activeProject) return;
       const outcome = toggleDependency(activeProject, id, dependencyId);
       if (outcome.error) setNotice(outcome.error);
-      else editProject(outcome.project);
+      else {
+        const current = documentRef.current;
+        if (current) commit(updateProject(current, outcome.project), "editing");
+      }
     },
-    [activeProject, editProject],
+    [activeProject, commit],
   );
   const setLimit = useCallback(
     (limit: number | null) => {
-      if (activeProject) editProject(setConcurrency(activeProject, limit));
+      if (activeProject) {
+        const current = documentRef.current;
+        if (current)
+          commit(
+            updateProject(current, setConcurrency(activeProject, limit)),
+            "editing",
+          );
+      }
     },
-    [activeProject, editProject],
+    [activeProject, commit],
   );
 
   const simulate = useCallback(
@@ -236,29 +360,79 @@ export function useLatencyLab() {
         setNotice(result.warnings[0] ?? "请先修复链路配置再保存方案。");
         return false;
       }
-      const next = saveScenario(activeProject, result, name);
-      editProject(next);
-      setComparisonIds({
-        baselineId: next.scenarios[1]?.id ?? next.scenarios[0]?.id ?? "",
-        comparisonId: next.scenarios[0]?.id ?? "",
-      });
-      setNotice("方案快照已保存。");
+      const withSnapshot = saveScenario(activeProject, result, name);
+      const snapshotName = withSnapshot.scenarios[0]?.name ?? "新方案";
+      // 保存后保持原有对比选择有效；仅在不足两份或第二份刚出现时才说明变化。
+      const reconciled = reconcileScenarioSelection(withSnapshot, "save");
+      const current = documentRef.current;
+      if (!current) return false;
+      const savedNotice =
+        withSnapshot.scenarios.length === 1
+          ? `方案快照“${snapshotName}”已保存；再保存一份方案即可选择基准与对照。`
+          : `方案快照“${snapshotName}”已保存，当前对比选择保持不变。`;
+      commit(
+        updateProject(current, reconciled.project),
+        "editing",
+        reconciled.notice || savedNotice,
+      );
       return true;
     },
-    [activeProject, editProject, mode],
+    [activeProject, commit, mode],
   );
 
   const removeSavedScenario = useCallback(
     (id: string) => {
-      if (activeProject) editProject(removeScenario(activeProject, id));
+      if (!activeProject) return;
+      const removedScenario = activeProject.scenarios.find(
+        (scenario) => scenario.id === id,
+      );
+      if (!removedScenario) return;
+      const current = documentRef.current;
+      if (!current) return;
+      const next = removeScenario(activeProject, id);
+      const outcome = applyProjectChange(
+        current,
+        next,
+        "remove",
+        removedScenario.name,
+      );
+      // 删除不在对比中的方案时也要确认结果，避免“没有任何说明”。
+      const fallback = `已删除方案“${removedScenario.name}”，当前对比的两份方案保持不变。`;
+      commit(outcome.document, "editing", outcome.notice || fallback);
+    },
+    [activeProject, commit],
+  );
+
+  const restoreSavedScenario = useCallback(
+    (id: string) => {
+      if (!activeProject) return;
+      const snapshot = activeProject.scenarios.find(
+        (scenario) => scenario.id === id,
+      );
+      if (!snapshot) return;
+      const next = restoreScenario(activeProject, id);
+      // 恢复只改图参数，不动方案列表，对比选择天然保持；但要明确告知。
+      editProject(
+        next,
+        `已将当前链路参数恢复为方案“${snapshot.name}”，对比选择保持不变。`,
+      );
     },
     [activeProject, editProject],
   );
-  const restoreSavedScenario = useCallback(
-    (id: string) => {
-      if (activeProject) editProject(restoreScenario(activeProject, id));
+
+  const selectComparisonScenario = useCallback(
+    (side: "baselineId" | "comparisonId", id: string) => {
+      if (!activeProject) return;
+      const { project: next, notice: sideNotice } = selectScenarioSide(
+        activeProject,
+        side,
+        id,
+      );
+      const current = documentRef.current;
+      if (current)
+        commit(updateProject(current, next), "ready", sideNotice || undefined);
     },
-    [activeProject, editProject],
+    [activeProject, commit],
   );
 
   const retrySave = useCallback(() => {

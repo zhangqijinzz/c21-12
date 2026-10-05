@@ -1,5 +1,6 @@
 import {
   createEmptyProject,
+  EMPTY_SELECTION,
   type LatencyProject,
   type WorkspaceDocument,
 } from "../../shared/domain/types";
@@ -50,7 +51,9 @@ export function duplicateProject(
     title: `${project.title} · 副本`,
     createdAt: now,
     updatedAt: now,
+    // 副本不携带方案快照，对比选择显式置空，绝不继承源项目里已失效的 ID。
     scenarios: [],
+    comparison: EMPTY_SELECTION,
     nodes: clonedNodes.map((node, index) => {
       const source = project.nodes[index];
       if (!source) return node;
