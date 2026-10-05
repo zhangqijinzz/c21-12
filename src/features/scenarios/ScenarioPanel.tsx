@@ -3,15 +3,18 @@ import {
   ArrowDownRight,
   ArrowUpRight,
   GitCompareArrows,
+  Info,
   Plus,
   RotateCcw,
   Trash2,
+  X,
 } from "lucide-react";
 import type {
   LatencyProject,
   ScenarioSnapshot,
 } from "../../shared/domain/types";
 import type { ScenarioComparison } from "./scenarioViewModel";
+import type { ComparisonStatus } from "./comparisonSelection";
 
 interface Props {
   project: LatencyProject;
@@ -21,6 +24,12 @@ interface Props {
   baseline?: ScenarioSnapshot;
   comparison?: ScenarioSnapshot;
   comparisonResult?: ScenarioComparison;
+  selectedBaselineId: string;
+  selectedComparisonId: string;
+  comparisonStatus: ComparisonStatus;
+  comparisonHint: string;
+  comparisonNotice: string;
+  onDismissNotice: () => void;
   onSelectBaseline: (id: string) => void;
   onSelectComparison: (id: string) => void;
 }
@@ -31,6 +40,8 @@ function formatDuration(value: number): string {
     : `${(value / 1000).toFixed(2)} s`;
 }
 
+const UNSELECTED = "";
+
 export default function ScenarioPanel({
   project,
   onSave,
@@ -39,6 +50,12 @@ export default function ScenarioPanel({
   baseline,
   comparison,
   comparisonResult,
+  selectedBaselineId,
+  selectedComparisonId,
+  comparisonStatus,
+  comparisonHint,
+  comparisonNotice,
+  onDismissNotice,
   onSelectBaseline,
   onSelectComparison,
 }: Props) {
@@ -46,6 +63,7 @@ export default function ScenarioPanel({
   const delta = comparisonResult?.deltaMs ?? 0;
   const outcome = comparisonResult?.outcome ?? "equal";
   const changes = comparisonResult?.changes ?? [];
+  const isReady = comparisonStatus === "ready";
   return (
     <section className="module-page scenarios-page">
       <div className="module-heading">
@@ -92,9 +110,10 @@ export default function ScenarioPanel({
             <div>
               <span className="compare-label">基准方案</span>
               <select
-                value={baseline?.id ?? ""}
+                value={selectedBaselineId}
                 onChange={(event) => onSelectBaseline(event.target.value)}
               >
+                <option value={UNSELECTED}>— 未选择基准方案 —</option>
                 {project.scenarios.map((scenario) => (
                   <option key={scenario.id} value={scenario.id}>
                     {scenario.name}
@@ -106,9 +125,10 @@ export default function ScenarioPanel({
             <div>
               <span className="compare-label">对照方案</span>
               <select
-                value={comparison?.id ?? ""}
+                value={selectedComparisonId}
                 onChange={(event) => onSelectComparison(event.target.value)}
               >
+                <option value={UNSELECTED}>— 未选择对照方案 —</option>
                 {project.scenarios.map((scenario) => (
                   <option key={scenario.id} value={scenario.id}>
                     {scenario.name}
@@ -117,7 +137,26 @@ export default function ScenarioPanel({
               </select>
             </div>
           </div>
-          {baseline && comparison && (
+          {comparisonNotice && (
+            <div className="comparison-note comparison-note-change" role="status">
+              <Info size={13} />
+              <span>{comparisonNotice}</span>
+              <button
+                type="button"
+                onClick={onDismissNotice}
+                aria-label="关闭提示"
+              >
+                <X size={12} />
+              </button>
+            </div>
+          )}
+          {!isReady && comparisonHint && (
+            <div className="comparison-note" role="note">
+              <Info size={13} />
+              <span>{comparisonHint}</span>
+            </div>
+          )}
+          {isReady && baseline && comparison && (
             <div className="comparison-result">
               <article className="compare-card">
                 <span>基准完成时间</span>
@@ -160,47 +199,61 @@ export default function ScenarioPanel({
               <span className="section-label">已保存快照</span>
               <span>{project.scenarios.length} 个方案</span>
             </div>
-            {project.scenarios.map((scenario) => (
-              <div className="snapshot-row" key={scenario.id}>
-                <span className="snapshot-badge">S</span>
-                <div className="snapshot-info">
-                  <strong>{scenario.name}</strong>
-                  <small>
-                    {new Date(scenario.createdAt).toLocaleString("zh-CN", {
-                      month: "numeric",
-                      day: "numeric",
-                      hour: "2-digit",
-                      minute: "2-digit",
-                    })}{" "}
-                    ·{" "}
-                    {scenario.concurrencyLimit
-                      ? `${scenario.concurrencyLimit} 路并发`
-                      : "不限并发"}
-                  </small>
+            {project.scenarios.map((scenario) => {
+              const isBaseline = scenario.id === selectedBaselineId;
+              const isComparison = scenario.id === selectedComparisonId;
+              return (
+                <div className="snapshot-row" key={scenario.id}>
+                  <span className="snapshot-badge">S</span>
+                  <div className="snapshot-info">
+                    <strong>{scenario.name}</strong>
+                    <small>
+                      {new Date(scenario.createdAt).toLocaleString("zh-CN", {
+                        month: "numeric",
+                        day: "numeric",
+                        hour: "2-digit",
+                        minute: "2-digit",
+                      })}{" "}
+                      ·{" "}
+                      {scenario.concurrencyLimit
+                        ? `${scenario.concurrencyLimit} 路并发`
+                        : "不限并发"}
+                      {(isBaseline || isComparison) && (
+                        <em className="snapshot-role">
+                          {[
+                            isBaseline ? "基准" : "",
+                            isComparison ? "对照" : "",
+                          ]
+                            .filter(Boolean)
+                            .join(" / ")}
+                        </em>
+                      )}
+                    </small>
+                  </div>
+                  <b className="snapshot-time">
+                    {formatDuration(scenario.completionMs)}
+                  </b>
+                  <button
+                    className="icon-button"
+                    title="恢复此方案"
+                    aria-label={`恢复方案 ${scenario.name}`}
+                    onClick={() => onRestore(scenario.id)}
+                  >
+                    <RotateCcw size={14} />
+                  </button>
+                  <button
+                    className="icon-button danger-button"
+                    title="删除方案"
+                    aria-label={`删除方案 ${scenario.name}`}
+                    onClick={() => onRemove(scenario.id)}
+                  >
+                    <Trash2 size={14} />
+                  </button>
                 </div>
-                <b className="snapshot-time">
-                  {formatDuration(scenario.completionMs)}
-                </b>
-                <button
-                  className="icon-button"
-                  title="恢复此方案"
-                  aria-label={`恢复方案 ${scenario.name}`}
-                  onClick={() => onRestore(scenario.id)}
-                >
-                  <RotateCcw size={14} />
-                </button>
-                <button
-                  className="icon-button danger-button"
-                  title="删除方案"
-                  aria-label={`删除方案 ${scenario.name}`}
-                  onClick={() => onRemove(scenario.id)}
-                >
-                  <Trash2 size={14} />
-                </button>
-              </div>
-            ))}
+              );
+            })}
           </div>
-          {changes.length > 0 && (
+          {isReady && changes.length > 0 && (
             <div className="change-summary">
               <strong>参数变化</strong>
               {changes.map((change) => (

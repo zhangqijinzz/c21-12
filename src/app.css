@@ -1811,6 +1811,46 @@ button:disabled {
   color: #a4aca3;
   font: 9px var(--mono);
 }
+.comparison-note {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 auto 14px;
+  max-width: 720px;
+  padding: 9px 11px;
+  color: #6f7a66;
+  background: #f5f7f2;
+  border: 1px solid #e6ebe1;
+  border-radius: 7px;
+  font-size: 9px;
+}
+.comparison-note > span {
+  flex: 1;
+}
+.comparison-note button {
+  display: grid;
+  place-items: center;
+  width: 20px;
+  height: 20px;
+  color: #8a9585;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+.comparison-note-change {
+  color: #7a6a3f;
+  background: #fbf6e4;
+  border-color: #ede3bd;
+}
+.snapshot-role {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 1px 6px;
+  color: #6f9843;
+  background: #eef4e3;
+  border-radius: 4px;
+  font-style: normal;
+}
 .comparison-result {
   display: grid;
   grid-template-columns: 1fr 150px 1fr;

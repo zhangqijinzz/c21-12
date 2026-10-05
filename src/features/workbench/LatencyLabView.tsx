@@ -169,6 +169,12 @@ export default function LatencyLabView() {
               baseline={vm.baselineScenario}
               comparison={vm.comparisonScenario}
               comparisonResult={vm.scenarioComparison}
+              selectedBaselineId={vm.comparisonSelection.baselineId}
+              selectedComparisonId={vm.comparisonSelection.comparisonId}
+              comparisonStatus={vm.comparisonStatus}
+              comparisonHint={vm.comparisonHint}
+              comparisonNotice={vm.comparisonNotice}
+              onDismissNotice={vm.dismissComparisonNotice}
               onSelectBaseline={(id) =>
                 vm.selectComparisonScenario("baselineId", id)
               }

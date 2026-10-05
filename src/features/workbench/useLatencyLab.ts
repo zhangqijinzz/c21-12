@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ProjectRepository } from "../../shared/repositories/projectRepository";
 import type {
   LatencyProject,
+  ScenarioSnapshot,
   SimulationMode,
   WorkspaceDocument,
 } from "../../shared/domain/types";
@@ -26,6 +27,14 @@ import {
   saveScenario,
   type ScenarioComparison,
 } from "../scenarios/scenarioViewModel";
+import {
+  EMPTY_SELECTION,
+  resolveComparisonSelection,
+  selectionAfterRemove,
+  selectionAfterSave,
+  type ComparisonSelection,
+  type ComparisonSide,
+} from "../scenarios/comparisonSelection";
 import { removeProject, updateProject } from "../projects/projectViewModel";
 import { simulateProject } from "../../shared/domain/simulation";
 
@@ -41,16 +50,27 @@ export function useLatencyLab() {
   const [status, setStatus] = useState<LabStatus>("loading");
   const [module, setModule] = useState<LabModule>("simulation");
   const [mode, setMode] = useState<SimulationMode>("expected");
-  const [comparisonIds, setComparisonIds] = useState<{
-    baselineId: string;
-    comparisonId: string;
-  }>({ baselineId: "", comparisonId: "" });
+  // 对比选择按项目隔离，绝不跨项目派生：key 为项目 id。
+  const [comparisonSelections, setComparisonSelections] = useState<
+    Record<string, ComparisonSelection>
+  >({});
+  const [comparisonNotice, setComparisonNotice] = useState("");
   const [notice, setNotice] = useState("");
   const [persisted, setPersisted] = useState<"saving" | "saved" | "error">(
     "saved",
   );
   const queue = useRef(Promise.resolve());
   const revision = useRef(0);
+  const lastActiveProjectId = useRef<string>("");
+  // 选择迁移由归一化 effect 在项目数据更新后统一执行，处理器只登记待处理操作，
+  // 避免「项目列表」和「选择 state」两个更新之间的时序竞争。
+  type PendingSelectionChange =
+    | { kind: "save" }
+    | { kind: "remove"; removed: ScenarioSnapshot }
+    | { kind: "restore"; name: string }
+    | { kind: "clear" };
+  const pendingSelectionChange = useRef<PendingSelectionChange | null>(null);
+  const lastScenariosKey = useRef("");
   const activeProject =
     document?.projects.find(
       (project) => project.id === document.activeProjectId,
@@ -63,29 +83,136 @@ export function useLatencyLab() {
     () => (activeProject ? getGraphAnalysis(activeProject) : undefined),
     [activeProject],
   );
-  const scenarioList = activeProject?.scenarios ?? [];
-  const baselineScenario =
-    scenarioList.find((scenario) => scenario.id === comparisonIds.baselineId) ??
-    scenarioList[1] ??
-    scenarioList[0];
-  const comparisonScenario =
-    scenarioList.find(
-      (scenario) => scenario.id === comparisonIds.comparisonId,
-    ) ?? scenarioList[0];
+  const scenarioList = useMemo(
+    () => activeProject?.scenarios ?? [],
+    [activeProject],
+  );
+  const storedSelection = activeProject
+    ? (comparisonSelections[activeProject.id] ?? EMPTY_SELECTION)
+    : EMPTY_SELECTION;
+  // 解析是纯函数：选择有效就原样保留，失效则清空并给出原因，绝不静默换成别的方案。
+  const comparisonResolution = useMemo(
+    () => resolveComparisonSelection(scenarioList, storedSelection),
+    [scenarioList, storedSelection],
+  );
+  const baselineScenario = comparisonResolution.baseline;
+  const comparisonScenario = comparisonResolution.comparison;
   const scenarioComparison: ScenarioComparison | undefined =
-    baselineScenario && comparisonScenario
+    comparisonResolution.status === "ready" &&
+    baselineScenario &&
+    comparisonScenario
       ? compareScenarios(baselineScenario, comparisonScenario)
       : undefined;
   const simulationValid =
     Boolean(activeProject) &&
     result?.entries.length === activeProject?.nodes.length;
 
-  const selectComparisonScenario = useCallback(
-    (side: "baselineId" | "comparisonId", id: string) => {
-      setComparisonIds((current) => ({ ...current, [side]: id }));
+  const updateSelection = useCallback(
+    (projectId: string, selection: ComparisonSelection) => {
+      setComparisonSelections((current) => ({
+        ...current,
+        [projectId]: selection,
+      }));
     },
     [],
   );
+
+  const selectComparisonScenario = useCallback(
+    (side: ComparisonSide, id: string) => {
+      if (!activeProject) return;
+      const projectId = activeProject.id;
+      // 用户手动选择是显式状态：允许两侧相同（界面会提示），但绝不自动替他改另一侧。
+      setComparisonSelections((current) => {
+        const previous = current[projectId] ?? EMPTY_SELECTION;
+        return {
+          ...current,
+          [projectId]: { ...previous, [side]: id },
+        };
+      });
+      setComparisonNotice("");
+      pendingSelectionChange.current = null;
+    },
+    [activeProject],
+  );
+
+  // 切换项目或方案列表变化（保存、删除、复制、导入/恢复数据）后，统一归一化选择：
+  // 失效的 id 必须清空并说明，绝不让选择静默指向别的方案；选择按项目隔离。
+  useEffect(() => {
+    if (!activeProject) return;
+    const projectId = activeProject.id;
+    if (lastActiveProjectId.current !== projectId) {
+      // 切换项目：每个项目的对比选择独立，提示也不跨项目携带。
+      lastActiveProjectId.current = projectId;
+      setComparisonNotice("");
+    }
+
+    const scenariosKey = `${projectId}:${activeProject.updatedAt}:${activeProject.scenarios
+      .map((scenario) => scenario.id)
+      .join("|")}`;
+    const projectChanged = lastScenariosKey.current !== scenariosKey;
+    lastScenariosKey.current = scenariosKey;
+
+    const stored = comparisonSelections[projectId] ?? EMPTY_SELECTION;
+    let nextSelection = stored;
+    let notice = "";
+
+    if (projectChanged && pendingSelectionChange.current) {
+      // 保存/删除/恢复引发的确定性迁移（在新方案列表上计算）。
+      const pending = pendingSelectionChange.current;
+      pendingSelectionChange.current = null;
+      if (pending.kind === "save") {
+        const migrated = selectionAfterSave(activeProject.scenarios, stored);
+        nextSelection = migrated.selection;
+        notice = migrated.notice;
+      } else if (pending.kind === "remove") {
+        const migrated = selectionAfterRemove(
+          activeProject.scenarios,
+          stored,
+          pending.removed,
+        );
+        nextSelection = migrated.selection;
+        notice = migrated.notice;
+      } else if (pending.kind === "restore") {
+        notice = pending.name
+          ? `已将当前编排恢复为「${pending.name}」的参数；对比选择保持不变。`
+          : "";
+      } else {
+        notice = "";
+      }
+      setComparisonNotice(notice);
+    } else {
+      // 无显式操作：仅做失效归一化（例如外部导入导致 id 消失）。
+      const resolved = resolveComparisonSelection(
+        activeProject.scenarios,
+        stored,
+      );
+      nextSelection = resolved.selection;
+      if (
+        stored.baselineId !== nextSelection.baselineId ||
+        stored.comparisonId !== nextSelection.comparisonId
+      ) {
+        if (resolved.notice) setComparisonNotice(resolved.notice);
+      }
+    }
+
+    if (
+      stored.baselineId !== nextSelection.baselineId ||
+      stored.comparisonId !== nextSelection.comparisonId
+    ) {
+      updateSelection(projectId, nextSelection);
+    }
+  }, [activeProject, comparisonSelections, updateSelection]);
+
+  // 项目被整体替换（复制项目、导入工作区等）后，清掉已不存在项目的选择记录。
+  useEffect(() => {
+    if (!document) return;
+    const liveIds = new Set(document.projects.map((project) => project.id));
+    setComparisonSelections((current) => {
+      const keys = Object.keys(current);
+      if (keys.every((id) => liveIds.has(id))) return current;
+      return Object.fromEntries(keys.filter((id) => liveIds.has(id)).map((id) => [id, current[id]!]));
+    });
+  }, [document]);
 
   useEffect(() => {
     let mounted = true;
@@ -237,11 +364,9 @@ export function useLatencyLab() {
         return false;
       }
       const next = saveScenario(activeProject, result, name);
+      // 保存不顶掉已有选择；迁移在 effect 里依据新方案列表统一完成。
+      pendingSelectionChange.current = { kind: "save" };
       editProject(next);
-      setComparisonIds({
-        baselineId: next.scenarios[1]?.id ?? next.scenarios[0]?.id ?? "",
-        comparisonId: next.scenarios[0]?.id ?? "",
-      });
       setNotice("方案快照已保存。");
       return true;
     },
@@ -250,13 +375,25 @@ export function useLatencyLab() {
 
   const removeSavedScenario = useCallback(
     (id: string) => {
-      if (activeProject) editProject(removeScenario(activeProject, id));
+      if (!activeProject) return;
+      const removed = activeProject.scenarios.find(
+        (scenario) => scenario.id === id,
+      );
+      const next = removeScenario(activeProject, id);
+      if (removed) pendingSelectionChange.current = { kind: "remove", removed };
+      editProject(next);
     },
     [activeProject, editProject],
   );
   const restoreSavedScenario = useCallback(
     (id: string) => {
-      if (activeProject) editProject(restoreScenario(activeProject, id));
+      if (!activeProject) return;
+      // 恢复只覆盖工作区参数，方案列表与对比选择都保持不变。
+      editProject(restoreScenario(activeProject, id));
+      const name =
+        activeProject.scenarios.find((scenario) => scenario.id === id)?.name ??
+        "";
+      pendingSelectionChange.current = { kind: "restore", name };
     },
     [activeProject, editProject],
   );
@@ -299,6 +436,11 @@ export function useLatencyLab() {
     baselineScenario,
     comparisonScenario,
     scenarioComparison,
+    comparisonSelection: comparisonResolution.selection,
+    comparisonStatus: comparisonResolution.status,
+    comparisonHint: comparisonResolution.hint,
+    comparisonNotice,
+    dismissComparisonNotice: () => setComparisonNotice(""),
     selectComparisonScenario,
   };
 }
